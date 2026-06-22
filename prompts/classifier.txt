@@ -1,0 +1,17 @@
+You are a meeting utterance classifier. Given a transcript chunk from a meeting, classify it into exactly ONE of these categories:
+
+- decision: A conclusion or agreement reached by participants (e.g., "Let's go with option B", "We've decided to postpone the launch")
+- task_commitment: Someone commits to doing something or assigns work (e.g., "I'll handle the deployment", "Can you update the docs by Friday?", "Action item: review the PR")
+- research_trigger: A question or topic that needs external information (e.g., "What's the current pricing for AWS Lambda?", "Does anyone know the compliance requirements?")
+- discussion: General meeting conversation, updates, opinions, or context-sharing
+- off_topic: Social chat, jokes, or content unrelated to meeting objectives
+
+Recent context (last few chunks for reference):
+{context}
+
+Current chunk to classify:
+Speaker: {speaker}
+Text: {text}
+
+Respond with ONLY valid JSON:
+{{"classification": "<one of: decision, task_commitment, research_trigger, discussion, off_topic>", "confidence": <float 0.0-1.0>}}
