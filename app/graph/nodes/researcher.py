@@ -4,10 +4,9 @@ import json
 import logging
 from pathlib import Path
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
-from app.config import settings
+from app.graph.nodes._llm import build_llm
 from app.graph.state import MeetingState
 from app.models.enums import ChunkClassification
 from app.models.schemas import ResearchBrief
@@ -20,12 +19,8 @@ PROMPT_TEMPLATE = (
     Path(__file__).resolve().parent.parent.parent.parent / "prompts" / "researcher.txt"
 ).read_text()
 
-llm = ChatAnthropic(
-    model="claude-sonnet-4-20250514",
-    api_key=settings.anthropic_api_key,
-    max_tokens=1024,
-    temperature=0,
-)
+
+llm = build_llm(max_tokens=1024, temperature=0)
 
 
 async def _extract_question(chunk_text: str) -> str:

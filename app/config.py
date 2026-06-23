@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # LLM
     anthropic_api_key: str = ""
+    groq_api_key: str = ""
     openai_api_key: str = ""
 
     # Web Search
@@ -25,8 +26,7 @@ class Settings(BaseSettings):
     ms_graph_tenant_id: str = ""
 
     # ChromaDB
-    chromadb_host: str = "localhost"
-    chromadb_port: int = 8000
+    chromadb_path: str = "./chroma_db"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
