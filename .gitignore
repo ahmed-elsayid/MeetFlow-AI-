@@ -12,3 +12,8 @@ app_logs/
 .pytest_cache/
 .mypy_cache/
 .claude/
+output/
+debug_screenshot.png
+recording.wav
+bot.log
+bot/.env

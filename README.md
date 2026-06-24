@@ -1,20 +1,20 @@
 # AI Meeting System for Microsoft Teams — MVP
 
-An AI-powered meeting assistant that joins Microsoft Teams calls, transcribes audio in real time, classifies utterances, and routes them to specialized agents for note-taking, task extraction, research, and follow-up emails.
+An AI-powered meeting assistant that joins Microsoft Teams calls, scrapes real-time captions from the browser DOM, classifies utterances, and routes them to specialized agents for note-taking, task extraction, research, and follow-up emails.
 
 ## Architecture
 
 ```
-Teams Meeting → Audio → Whisper STT → Transcript Chunks
-                                           ↓
-                                    Orchestrator (Claude)
-                                    ↙    ↓      ↘
-                            Note-taker  Task    Researcher
-                            → Notion    Agent   → RAG/Tavily
-                                        → Jira
-                                           ↓
-                                    Email Drafter
-                                    → HITL Gate → Send
+Teams Meeting → Playwright Bot → Browser Caption Scraping → Transcript Chunks
+                                                              ↓
+                                                       Orchestrator (Claude)
+                                                       ↙    ↓      ↘
+                                               Note-taker  Task    Researcher
+                                               → Notion    Agent   → RAG/Tavily
+                                                           → Jira
+                                                              ↓
+                                                       Email Drafter
+                                                       → HITL Gate → Send
 ```
 
 **5 Agents:** Orchestrator (classifier + router), Note-taker, Task Extractor, Research, Email Drafter  
@@ -28,14 +28,15 @@ Teams Meeting → Audio → Whisper STT → Transcript Chunks
 | API | FastAPI |
 | Orchestration | LangGraph (stateful multi-agent graph) |
 | LLM | Claude (Anthropic) |
-| Speech-to-text | OpenAI Whisper |
+| Real-time transcription | Browser caption scraping (Playwright MutationObserver) |
+| Meeting joining | Playwright + Groq vision (fallback) |
 | Embeddings | OpenAI text-embedding-3-small |
 | Vector DB | ChromaDB |
 | Web search | Tavily API |
 | Tasks | Jira REST API |
 | Notes | Notion API |
 | Email | Microsoft Graph Mail API / SMTP |
-| Teams | Microsoft Graph API |
+| Teams | Playwright browser automation |
 | Tracing | LangSmith |
 | Containers | Podman + podman-compose |
 | Queue | Redis Streams |
@@ -77,9 +78,9 @@ uvicorn app.main:app --reload --port 8080
 POST /meeting/start
 {"meeting_id": "standup_20260622", "title": "Daily Standup", "participants": ["a@co.com"]}
 
-# Send transcript chunks (from audio pipeline)
+# Send transcript chunks (from browser caption scraper)
 POST /meeting/chunk
-{"meeting_id": "standup_20260622", "speaker": "Sarah", "text": "I'll update the docs by Friday", "timestamp_start": "00:12:34", "timestamp_end": "00:12:51", "minute": 12}
+{"meeting_id": "standup_20260622", "speaker": "Sarah", "text": "I'll update the docs by Friday.", "timestamp_start": "00:12:34", "timestamp_end": "00:12:51", "minute": 12}
 
 # End meeting (triggers email drafting)
 POST /meeting/{id}/end

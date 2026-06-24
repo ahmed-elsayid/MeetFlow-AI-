@@ -1,8 +1,8 @@
 # AI Meeting System for Microsoft Teams — MVP
 
-> **Version:** MVP v1.0  
+> **Version:** MVP v2.0  
 > **Scope:** Core system only. Enhancement phases planned separately.  
-> **Stack:** Python 3.11+ · LangGraph · ChromaDB · Podman · LangSmith
+> **Stack:** Python 3.11+ · LangGraph · ChromaDB · Podman · LangSmith · Playwright
 
 ---
 
@@ -31,7 +31,7 @@ The deeper problem is that meetings produce unstructured audio and structured de
 
 | ID | Feature | What it does | MVP boundary |
 |----|---------|-------------|--------------|
-| F1 | Real-time transcription | Bot joins Teams call, captures audio, runs speech-to-text, streams transcript chunks to the orchestrator | Single meeting at a time. English only. |
+| F1 | Real-time transcription | Bot joins Teams call via Playwright, enables live captions, scrapes captions from the browser DOM using MutationObserver, streams transcript chunks to the orchestrator | Single meeting at a time. English only. |
 | F2 | Structured note-taking | Separates discussion from decisions, groups by topic, writes to Notion or Google Docs live during the meeting | Auto-generated topic headings. No manual formatting. |
 | F3 | Task extraction | Detects commitment language, extracts assignee + deadline + description, creates Jira tickets | Jira only in MVP. Trello and others in enhancement. |
 | F4 | RAG with timestamps | Every transcript chunk stored with speaker, minute, timestamp metadata. Uploaded pre-meeting documents chunked and indexed. Queries filtered by time before vector search. | ChromaDB. Single collection per meeting. |
@@ -152,14 +152,15 @@ Not a standalone agent. A reusable middleware any agent can invoke to pause and 
 | API framework | FastAPI |
 | Orchestration | LangGraph (stateful multi-agent graph) |
 | LLM | Claude (Anthropic API) — primary. OpenAI GPT-4o — fallback. |
-| Speech-to-text | OpenAI Whisper |
+| Real-time transcription | Browser caption scraping via Playwright MutationObserver |
+| Meeting joining | Playwright + Groq vision (fallback) |
 | Embeddings | OpenAI text-embedding-3-small |
 | Vector database | ChromaDB (containerized) |
 | Web search | Tavily API |
 | Task management | Jira REST API |
 | Note storage | Notion API |
 | Email | Microsoft Graph Mail API |
-| Teams integration | Microsoft Graph API (bot join, adaptive cards) |
+| Teams integration | Playwright browser automation (join + captions) |
 | Tracing | LangSmith |
 | Containerization | Podman + podman-compose |
 | Message passing | LangGraph channels (in-process). Redis Streams if scaling needed. |
@@ -198,13 +199,20 @@ Not a standalone agent. A reusable middleware any agent can invoke to pause and 
 Teams meeting starts
          │
          ▼
-Bot joins via Microsoft Graph API
+Bot joins via Playwright browser automation
+  (vision-guided with Groq fallback)
          │
          ▼
-Audio stream captured → Whisper speech-to-text → diarization
+Bot enables live captions in Teams UI
          │
          ▼
-Transcript chunks emitted every ~5 seconds
+MutationObserver scrapes captions from DOM in real time
+  - Speaker name extracted from span[data-tid="author"]
+  - Caption text finalized via terminal punctuation detection
+  - Duplicates filtered by stripped-text comparison
+         │
+         ▼
+Finalized caption segments emitted as they appear
   {speaker, text, timestamp_start, timestamp_end, minute, meeting_id}
          │
          ▼
