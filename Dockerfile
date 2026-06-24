@@ -6,8 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+RUN pip install uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-cache
 
 COPY . .
 

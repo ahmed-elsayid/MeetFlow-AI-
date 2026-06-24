@@ -1,55 +1,34 @@
 from __future__ import annotations
 
 import logging
-from io import BytesIO
 
-from openai import AsyncOpenAI
-
-from app.config import settings
 from app.models.schemas import TranscriptChunk
 
 logger = logging.getLogger(__name__)
 
-client = AsyncOpenAI(api_key=settings.openai_api_key)
 
-
-async def transcribe_audio(
-    audio_bytes: bytes,
+def caption_to_chunks(
+    speaker: str,
+    text: str,
     meeting_id: str,
-    offset_seconds: float = 0.0,
+    timestamp_start: str = "00:00:00",
+    timestamp_end: str = "00:00:00",
+    minute: int = 0,
 ) -> list[TranscriptChunk]:
-    """Transcribe audio bytes using OpenAI Whisper and return transcript chunks."""
-    audio_file = BytesIO(audio_bytes)
-    audio_file.name = "audio.webm"
+    """Convert a caption payload (already text) into TranscriptChunk objects.
 
-    response = await client.audio.transcriptions.create(
-        model="whisper-1",
-        file=audio_file,
-        response_format="verbose_json",
-        timestamp_granularities=["segment"],
+    With the browser caption scraping approach, audio is never sent to
+    this server — the bot scrapes captions directly from the Teams DOM
+    and forwards them as text.  This function is a thin adapter that
+    wraps the incoming text into the TranscriptChunk schema expected by
+    the rest of the pipeline.
+    """
+    chunk = TranscriptChunk(
+        meeting_id=meeting_id,
+        speaker=speaker,
+        text=text.strip(),
+        timestamp_start=timestamp_start,
+        timestamp_end=timestamp_end,
+        minute=minute,
     )
-
-    chunks: list[TranscriptChunk] = []
-
-    for segment in response.segments or []:
-        abs_start = offset_seconds + segment.start
-        abs_end = offset_seconds + segment.end
-
-        chunk = TranscriptChunk(
-            meeting_id=meeting_id,
-            speaker="Speaker",
-            text=segment.text.strip(),
-            timestamp_start=_seconds_to_timestamp(abs_start),
-            timestamp_end=_seconds_to_timestamp(abs_end),
-            minute=int(abs_start // 60),
-        )
-        chunks.append(chunk)
-
-    return chunks
-
-
-def _seconds_to_timestamp(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
+    return [chunk]
