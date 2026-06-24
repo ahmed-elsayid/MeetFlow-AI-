@@ -37,6 +37,8 @@ async def email_drafter_node(state: MeetingState) -> dict:
     decisions = state.get("decisions", [])
     tasks = state.get("tasks", [])
     research = state.get("research", [])
+    recipient_emails: list[str] = state.get("recipient_emails", [])
+    stakeholder_emails: list[str] = state.get("stakeholder_emails", []) or recipient_emails
 
     drafts: list[EmailDraft] = []
 
@@ -67,7 +69,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="participant",
                 subject=data.get("subject", f"Meeting Recap: {meeting_id}"),
                 body_html=data.get("body_html", ""),
-                recipients=[],
+                recipients=recipient_emails,
             )
         )
     except Exception:
@@ -77,7 +79,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="participant",
                 subject=f"Meeting Recap: {meeting_id}",
                 body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=[],
+                recipients=recipient_emails,
             )
         )
 
@@ -106,7 +108,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="stakeholder",
                 subject=data.get("subject", f"Meeting Brief: {meeting_id}"),
                 body_html=data.get("body_html", ""),
-                recipients=[],
+                recipients=stakeholder_emails,
             )
         )
     except Exception:
@@ -116,7 +118,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="stakeholder",
                 subject=f"Meeting Brief: {meeting_id}",
                 body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=[],
+                recipients=stakeholder_emails,
             )
         )
 

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from app.graph.builder import build_live_graph, build_post_meeting_graph
-from app.models.schemas import ChunkInput, MeetingStartRequest, TranscriptChunk
+from app.models.schemas import ChunkInput, EndMeetingRequest, MeetingStartRequest, TranscriptChunk
 from app.services.redis_queue import get_meeting_state, store_meeting_state
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,8 @@ def _init_state(meeting_id: str) -> dict:
         "email_drafts": [],
         "pending_approvals": [],
         "is_meeting_active": True,
+        "recipient_emails": [],
+        "stakeholder_emails": [],
         "error_log": [],
     }
 
@@ -95,12 +97,14 @@ async def process_chunk(chunk_input: ChunkInput):
 
 
 @router.post("/{meeting_id}/end")
-async def end_meeting(meeting_id: str):
+async def end_meeting(meeting_id: str, req: EndMeetingRequest = EndMeetingRequest()):
     meeting = _active_meetings.get(meeting_id)
     if not meeting:
         raise HTTPException(404, "Meeting not found")
 
     meeting["state"]["is_meeting_active"] = False
+    meeting["state"]["recipient_emails"] = req.recipient_emails
+    meeting["state"]["stakeholder_emails"] = req.stakeholder_emails or req.recipient_emails
 
     try:
         result = await post_meeting_graph.ainvoke(meeting["state"])

@@ -85,6 +85,11 @@ class MeetingStartRequest(BaseModel):
     participants: list[str] = Field(default_factory=list)
 
 
+class EndMeetingRequest(BaseModel):
+    recipient_emails: list[str] = Field(default_factory=list)
+    stakeholder_emails: list[str] = Field(default_factory=list)
+
+
 class ChunkInput(BaseModel):
     meeting_id: str
     speaker: str
