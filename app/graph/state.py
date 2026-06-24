@@ -25,4 +25,6 @@ class MeetingState(TypedDict):
     email_drafts: Annotated[list[EmailDraft], add]
     pending_approvals: Annotated[list[ApprovalRequest], add]
     is_meeting_active: bool
+    recipient_emails: list[str]
+    stakeholder_emails: list[str]
     error_log: Annotated[list[str], add]

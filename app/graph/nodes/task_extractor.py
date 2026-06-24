@@ -7,10 +7,10 @@ import logging
 from datetime import date
 from pathlib import Path
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from app.config import settings
+from app.graph.nodes._llm import build_llm
 from app.graph.state import MeetingState
 from app.models.enums import ChunkClassification
 from app.models.schemas import ExtractedTask
@@ -60,11 +60,7 @@ async def task_extractor_node(state: MeetingState) -> dict:
     #  3. Call Claude
     # ------------------------------------------------------------------ #
     try:
-        llm = ChatAnthropic(
-            model="claude-sonnet-4-20250514",
-            api_key=settings.anthropic_api_key,
-            max_tokens=2048,
-        )
+        llm = build_llm(max_tokens=2048)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         raw = response.content
     except Exception as exc:

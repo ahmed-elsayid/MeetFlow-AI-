@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 
 import chromadb
-import openai
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config import settings
 from app.models.schemas import TranscriptChunk
@@ -15,20 +16,18 @@ class RAGService:
     """ChromaDB-backed retrieval-augmented generation service."""
 
     def __init__(self) -> None:
-        self.chroma = chromadb.HttpClient(
-            host=settings.chromadb_host,
-            port=settings.chromadb_port,
+        self.chroma = chromadb.PersistentClient(
+            path=settings.chromadb_path
         )
+        
         self.collection = self.chroma.get_or_create_collection("meeting_transcripts")
-        self.openai_client = openai.OpenAI(api_key=settings.openai_api_key)
+        self.embeddings_client = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
 
     def _embed(self, text: str) -> list[float]:
-        """Generate an embedding using OpenAI text-embedding-3-small."""
-        response = self.openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=text,
-        )
-        return response.data[0].embedding
+        """Generate an embedding using sentence-transformers/all-MiniLM-L6-v2."""
+        return self.embeddings_client.embed_query(text)
 
     def embed_and_store(self, chunk: TranscriptChunk) -> None:
         """Embed a transcript chunk and store it in ChromaDB."""
@@ -108,12 +107,13 @@ class RAGService:
         return output
 
     def upload_document(self, meeting_id: str, text: str, source_name: str) -> None:
-        """Embed and store a supplementary document (not a live transcript chunk)."""
+        """Split, embed, and store a supplementary document in overlapping chunks."""
         try:
-            embedding = self._embed(text)
-            doc_id = f"{meeting_id}_doc_{source_name}"
+            splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+            chunks = splitter.split_text(text)
 
-            metadata = {
+            ids, embeddings, documents, metadatas = [], [], [], []
+            base_metadata = {
                 "meeting_id": meeting_id,
                 "speaker": "",
                 "timestamp_start": "",
@@ -123,13 +123,22 @@ class RAGService:
                 "source_type": "uploaded_document",
             }
 
+            for i, chunk in enumerate(chunks):
+                ids.append(f"{meeting_id}_doc_{source_name}_{i}")
+                embeddings.append(self._embed(chunk))
+                documents.append(chunk)
+                metadatas.append(base_metadata)
+
             self.collection.upsert(
-                ids=[doc_id],
-                embeddings=[embedding],
-                documents=[text],
-                metadatas=[metadata],
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
             )
-            logger.info("Stored uploaded document '%s' for meeting %s", source_name, meeting_id)
+            logger.info(
+                "Stored %d chunks from document '%s' for meeting %s",
+                len(chunks), source_name, meeting_id,
+            )
         except Exception:
             logger.exception("Failed to upload document '%s'", source_name)
             raise

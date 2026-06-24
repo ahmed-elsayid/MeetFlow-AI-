@@ -4,10 +4,9 @@ import json
 import logging
 from pathlib import Path
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
-from app.config import settings
+from app.graph.nodes._llm import build_llm
 from app.graph.state import MeetingState
 from app.models.schemas import EmailDraft
 
@@ -17,12 +16,7 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "prompts"
 PARTICIPANT_PROMPT = (PROMPTS_DIR / "email_participant.txt").read_text()
 STAKEHOLDER_PROMPT = (PROMPTS_DIR / "email_stakeholder.txt").read_text()
 
-llm = ChatAnthropic(
-    model="claude-sonnet-4-20250514",
-    api_key=settings.anthropic_api_key,
-    max_tokens=4096,
-    temperature=0,
-)
+llm = build_llm(max_tokens=4096, temperature=0)
 
 
 def _serialize(items: list) -> str:
@@ -43,6 +37,8 @@ async def email_drafter_node(state: MeetingState) -> dict:
     decisions = state.get("decisions", [])
     tasks = state.get("tasks", [])
     research = state.get("research", [])
+    recipient_emails: list[str] = state.get("recipient_emails", [])
+    stakeholder_emails: list[str] = state.get("stakeholder_emails", []) or recipient_emails
 
     drafts: list[EmailDraft] = []
 
@@ -73,7 +69,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="participant",
                 subject=data.get("subject", f"Meeting Recap: {meeting_id}"),
                 body_html=data.get("body_html", ""),
-                recipients=[],
+                recipients=recipient_emails,
             )
         )
     except Exception:
@@ -83,7 +79,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="participant",
                 subject=f"Meeting Recap: {meeting_id}",
                 body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=[],
+                recipients=recipient_emails,
             )
         )
 
@@ -112,7 +108,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="stakeholder",
                 subject=data.get("subject", f"Meeting Brief: {meeting_id}"),
                 body_html=data.get("body_html", ""),
-                recipients=[],
+                recipients=stakeholder_emails,
             )
         )
     except Exception:
@@ -122,7 +118,7 @@ async def email_drafter_node(state: MeetingState) -> dict:
                 variant="stakeholder",
                 subject=f"Meeting Brief: {meeting_id}",
                 body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=[],
+                recipients=stakeholder_emails,
             )
         )
 

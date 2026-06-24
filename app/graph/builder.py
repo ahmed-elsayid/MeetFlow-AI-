@@ -5,6 +5,7 @@ import logging
 from langgraph.graph import END, StateGraph
 
 from app.graph.nodes.email_drafter import email_drafter_node
+from app.graph.nodes.email_sender import email_sender_node
 from app.graph.nodes.notetaker import notetaker_node
 from app.graph.nodes.researcher import researcher_node
 from app.graph.nodes.task_extractor import task_extractor_node
@@ -75,12 +76,14 @@ def build_live_graph() -> StateGraph:
 
 
 def build_post_meeting_graph() -> StateGraph:
-    """Build the graph used after a meeting ends to generate emails."""
+    """Build the graph used after a meeting ends to generate and send emails."""
     graph = StateGraph(MeetingState)
 
     graph.add_node("email_drafter", email_drafter_node)
+    graph.add_node("email_sender", email_sender_node)
 
     graph.set_entry_point("email_drafter")
-    graph.add_edge("email_drafter", END)
+    graph.add_edge("email_drafter", "email_sender")
+    graph.add_edge("email_sender", END)
 
     return graph.compile()
