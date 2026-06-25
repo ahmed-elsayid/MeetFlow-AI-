@@ -28,3 +28,4 @@ class MeetingState(TypedDict):
     recipient_emails: list[str]
     stakeholder_emails: list[str]
     error_log: Annotated[list[str], add]
+    transcript : dict 

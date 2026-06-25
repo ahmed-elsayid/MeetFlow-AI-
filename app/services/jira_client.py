@@ -1,122 +1,241 @@
-"""Jira REST API client for creating and querying issues."""
+"""jira_mcp.py — MCP server exposing a tool to create Jira issues
+with assignee, due date, priority, and description."""
 
 from __future__ import annotations
 
-import base64
+import os
+import json
 import logging
-
+from dotenv import load_dotenv
 import httpx
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent
 
-from app.config import settings
-from app.models.schemas import ExtractedTask
-
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PRIORITY_MAP: dict[str, str] = {
-    "high": "1",
-    "medium": "3",
-    "low": "4",
-}
+JIRA_BASE_URL  = os.environ["JIRA_BASE_URL"]       # e.g. https://yourcompany.atlassian.net
+JIRA_EMAIL     = os.environ["JIRA_EMAIL"]           # your Atlassian account email
+JIRA_API_TOKEN = os.environ["JIRA_API_TOKEN"]       # API token from id.atlassian.com
+JIRA_PROJECT   = os.environ["JIRA_PROJECT_KEY"]     # e.g. MEET
 
 
-class JiraClient:
-    """Async client for the Jira Cloud REST API v3."""
+# ------------------------------------------------------------------ #
+#  Jira REST helper
+# ------------------------------------------------------------------ #
 
-    def __init__(self) -> None:
-        self.base_url = settings.jira_base_url.rstrip("/")
-        self.project_key = settings.jira_project_key
-        self._email = settings.jira_email
-        self._api_token = settings.jira_api_token
+async def create_jira_issue(
+    summary: str,
+    description: str | None,
+    assignee_email: str | None,
+    due_date: str | None,
+    priority: str = "Medium",
+    issue_type: str = "Task",
+) -> dict:
+    """POST /rest/api/3/issue to create a Jira issue."""
 
-        # Basic auth: base64(email:api_token)
-        credentials = base64.b64encode(
-            f"{self._email}:{self._api_token}".encode()
-        ).decode()
-        self._headers = {
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue"
+    auth = (JIRA_EMAIL, JIRA_API_TOKEN)
+
+    fields: dict = {
+        "project":   {"key": JIRA_PROJECT},
+        "summary":   summary,
+        "issuetype": {"name": issue_type},
+        "priority":  {"name": priority},
+    }
+
+    if description:
+        fields["description"] = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": description}]
+                }
+            ]
         }
 
-    # ------------------------------------------------------------------ #
-    #  Public methods
-    # ------------------------------------------------------------------ #
+    if assignee_email:
+        # Jira Cloud requires accountId — first resolve it from email
+        account_id = await resolve_account_id(assignee_email, auth)
+        if account_id:
+            fields["assignee"] = {"accountId": account_id}
+        else:
+            logger.warning("Could not resolve accountId for %s", assignee_email)
 
-    async def create_issue(self, task: ExtractedTask) -> str:
-        """Create a Jira issue from an ExtractedTask.
+    if due_date:
+        fields["duedate"] = due_date   # YYYY-MM-DD
 
-        Returns the browse URL for the created ticket
-        (e.g. https://myorg.atlassian.net/browse/MEET-42).
-        """
-        priority_id = PRIORITY_MAP.get(task.priority, "3")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            url,
+            json={"fields": fields},
+            auth=auth,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        return response.json()
 
-        payload: dict = {
-            "fields": {
-                "project": {"key": self.project_key},
-                "summary": task.task_description,
-                "issuetype": {"name": "Task"},
-                "priority": {"id": priority_id},
-                "description": {
-                    "version": 1,
-                    "type": "doc",
-                    "content": [
-                        {
-                            "type": "paragraph",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": task.task_description,
-                                }
-                            ],
-                        }
-                    ],
+
+async def resolve_account_id(email: str, auth: tuple) -> str | None:
+    """Look up a Jira Cloud accountId by email."""
+    url = f"{JIRA_BASE_URL}/rest/api/3/user/search"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            url,
+            params={"query": email},
+            auth=auth,
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        if response.status_code == 200:
+            users = response.json()
+            if users:
+                return users[0].get("accountId")
+    return None
+
+
+# ------------------------------------------------------------------ #
+#  MCP Server
+# ------------------------------------------------------------------ #
+
+app = Server("jira-mcp")
+
+
+@app.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="create_jira_task",
+            description="Create a Jira task with summary, description, assignee email, due date, and priority.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Task title / summary"
+                    },
+                    "description": {
+                        "type": ["string", "null"],
+                        "description": "Additional context or notes for the task"
+                    },
+                    "assignee_email": {
+                        "type": ["string", "null"],
+                        "description": "Atlassian account email of the assignee"
+                    },
+                    "due_date": {
+                        "type": ["string", "null"],
+                        "description": "Due date in YYYY-MM-DD format"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["Highest", "High", "Medium", "Low", "Lowest"],
+                        "description": "Task priority (default: Medium)"
+                    },
+                    "issue_type": {
+                        "type": "string",
+                        "enum": ["Task", "Story", "Bug", "Subtask"],
+                        "description": "Jira issue type (default: Task)"
+                    },
                 },
-            }
-        }
+                "required": ["summary"],
+            },
+        ),
+        Tool(
+            name="create_jira_tasks_bulk",
+            description="Create multiple Jira tasks at once from a list of action items.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "List of tasks to create",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "summary":        {"type": "string"},
+                                "description":    {"type": ["string", "null"]},
+                                "assignee_email": {"type": ["string", "null"]},
+                                "due_date":       {"type": ["string", "null"]},
+                                "priority":       {"type": ["string", "null"]},
+                            },
+                            "required": ["summary"],
+                        }
+                    }
+                },
+                "required": ["tasks"],
+            },
+        ),
+    ]
 
-        # Assignee — use displayName search if available
-        if task.assignee and not task.is_ambiguous:
-            payload["fields"]["assignee"] = {"displayName": task.assignee}
 
-        # Deadline
-        if task.deadline:
-            payload["fields"]["duedate"] = task.deadline
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/rest/api/3/issue",
-                headers=self._headers,
-                json=payload,
-                timeout=30,
+    if name == "create_jira_task":
+        try:
+            result = await create_jira_issue(
+                summary        = arguments["summary"],
+                description    = arguments.get("description"),
+                assignee_email = arguments.get("assignee_email"),
+                due_date       = arguments.get("due_date"),
+                priority       = arguments.get("priority", "Medium"),
+                issue_type     = arguments.get("issue_type", "Task"),
             )
-            response.raise_for_status()
-            data = response.json()
-            ticket_key = data["key"]
-            browse_url = f"{self.base_url}/browse/{ticket_key}"
-            logger.info("Created Jira issue %s: %s", ticket_key, task.task_description)
-            return browse_url
+            issue_key = result.get("key", "unknown")
+            issue_url = f"{JIRA_BASE_URL}/browse/{issue_key}"
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "success": True,
+                    "issue_key": issue_key,
+                    "url": issue_url,
+                })
+            )]
+        except httpx.HTTPStatusError as exc:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "error": str(exc),
+                "detail": exc.response.text,
+            }))]
+        except Exception as exc:
+            return [TextContent(type="text", text=json.dumps({
+                "success": False,
+                "error": str(exc),
+            }))]
 
-    async def get_issue(self, ticket_key: str) -> dict:
-        """Fetch a single Jira issue by its key (e.g. MEET-42)."""
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/rest/api/3/issue/{ticket_key}",
-                headers=self._headers,
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json()
+    elif name == "create_jira_tasks_bulk":
+        results = []
+        for task in arguments.get("tasks", []):
+            try:
+                result = await create_jira_issue(
+                    summary        = task["summary"],
+                    description    = task.get("description"),
+                    assignee_email = task.get("assignee_email"),
+                    due_date       = task.get("due_date"),
+                    priority       = task.get("priority", "Medium"),
+                    issue_type     = task.get("issue_type", "Task"),
+                )
+                issue_key = result.get("key", "unknown")
+                results.append({
+                    "success":   True,
+                    "summary":   task["summary"],
+                    "issue_key": issue_key,
+                    "url":       f"{JIRA_BASE_URL}/browse/{issue_key}",
+                })
+            except Exception as exc:
+                results.append({
+                    "success": False,
+                    "summary": task.get("summary"),
+                    "error":   str(exc),
+                })
 
-    async def list_project_issues(self) -> list[dict]:
-        """List issues for the configured project using JQL."""
-        jql = f"project = {self.project_key} ORDER BY created DESC"
+        return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}/rest/api/3/search",
-                headers=self._headers,
-                params={"jql": jql, "maxResults": 50},
-                timeout=30,
-            )
-            response.raise_for_status()
-            return response.json().get("issues", [])
+    return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+
+
