@@ -386,4 +386,4 @@ cd bot && uv run pytest tests/ -v
 - **No audio recording** — captions only; no Whisper or audio file
 - **Jira requires a real URL** — task creation silently skips if `JIRA_BASE_URL` is a placeholder
 - **Notion OAuth** — the first Notion write requires `notion_token.txt` to be present (created by the OAuth flow in `app/services/notion_client.py`)
-- **Windows bot subprocess** — the bot is spawned via `subprocess.Popen` (not `asyncio.create_subprocess_exec`) because Windows `SelectorEventLoop` does not support subprocess creation
+- **Windows bot subprocess** — the bot is spawned via `subprocess.Popen` (not `asyncio.create_subprocess_exec`) because Windows `SelectorEventLoop` does not support subprocess creation.
