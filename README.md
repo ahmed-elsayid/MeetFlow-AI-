@@ -1,6 +1,7 @@
 # MeetFlow AI
 
-An AI-powered meeting assistant for Microsoft Teams. The system joins a live Teams call via a headless browser bot, scrapes real-time captions from the DOM, classifies every utterance, and routes it to specialized agents that take notes, extract tasks, do research, and draft follow-up emails — all gated by human-in-the-loop approval before any action fires.
+An AI-powered meeting assistant for Microsoft Teams that automatically joins live meetings using a headless browser, captures real-time captions, and understands each speaker's messages. It intelligently routes conversations to specialized AI agents that generate meeting notes, extract action items, perform relevant research, and draft follow-up emails. Every suggested action is reviewed and approved by a human before it is executed, ensuring accuracy and control.
+
 
 ---
 
