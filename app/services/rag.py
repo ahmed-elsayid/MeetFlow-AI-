@@ -57,32 +57,66 @@ class RAGService:
     # ------------------------------------------------------------------
 
     async def embed_and_store(self, chunk: TranscriptChunk) -> None:
-        """Embed a live transcript chunk and persist it in ChromaDB."""
+        """Embed a single transcript chunk. Prefer embed_window() for richer context."""
+        await self.embed_window([chunk])
+
+    async def embed_window(self, chunks: list[TranscriptChunk]) -> None:
+        """Embed a window of consecutive utterances as one ChromaDB document.
+
+        Combining multiple utterances gives the retriever enough conversational
+        context to return meaningful passages instead of isolated one-liners.
+        The first chunk supplies the doc_id and metadata anchor; speakers are
+        deduplicated so filters still work correctly.
+        """
+        if not chunks:
+            return
         try:
-            embedding = await self._embed(chunk.text)
-            doc_id = f"{chunk.meeting_id}_{chunk.timestamp_start}"
+            # Build the text that will be embedded and stored.
+            # Format: "[Speaker]: text\n[Speaker]: text\n..."
+            combined_text = "\n".join(f"[{c.speaker}]: {c.text}" for c in chunks)
+
+            embedding = await self._embed(combined_text)
+
+            anchor = chunks[0]
+            # doc_id encodes the window start so upsert is idempotent for the same window.
+            doc_id = f"{anchor.meeting_id}_w_{anchor.timestamp_start}"
+
+            # Preserve unique speakers so speaker-filtered queries still work.
+            seen: dict[str, None] = {}
+            for c in chunks:
+                seen[c.speaker] = None
+            speakers = ", ".join(seen)
+
             metadata = {
-                "meeting_id": chunk.meeting_id,
-                "speaker": chunk.speaker,
-                "timestamp_start": chunk.timestamp_start,
-                "timestamp_end": chunk.timestamp_end,
-                "minute": chunk.minute,
-                "topic_cluster": chunk.topic_cluster or "",
-                "source_type": chunk.source_type,
+                "meeting_id": anchor.meeting_id,
+                "speaker": speakers,
+                "timestamp_start": anchor.timestamp_start,
+                "timestamp_end": chunks[-1].timestamp_end,
+                "minute": anchor.minute,
+                "topic_cluster": anchor.topic_cluster or "",
+                "source_type": anchor.source_type,
             }
+
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
                 lambda: self.collection.upsert(
                     ids=[doc_id],
                     embeddings=[embedding],
-                    documents=[chunk.text],
+                    documents=[combined_text],
                     metadatas=[metadata],
                 ),
             )
-            logger.debug("Stored chunk %s in ChromaDB", doc_id)
+            logger.debug(
+                "Stored window %s (%d utterances, %d chars) in ChromaDB",
+                doc_id, len(chunks), len(combined_text),
+            )
         except Exception:
-            logger.exception("Failed to embed and store chunk %s", chunk.meeting_id)
+            logger.exception(
+                "Failed to embed window starting at %s for meeting %s",
+                chunks[0].timestamp_start if chunks else "?",
+                chunks[0].meeting_id if chunks else "?",
+            )
 
     async def query(
         self,

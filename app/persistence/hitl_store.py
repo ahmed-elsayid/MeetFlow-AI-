@@ -29,7 +29,7 @@ async def save_hitl_request(
                     action_type,
                     json.dumps(payload, default=str),
                     status,
-                    datetime.utcnow().isoformat(),
+                    datetime.utcnow().isoformat() + "Z",
                 ),
             )
 
@@ -51,7 +51,7 @@ async def update_hitl_status(
                 """UPDATE hitl_requests
                    SET status=?, resolved_at=?, resolved_by=?
                    WHERE request_id=?""",
-                (status, datetime.utcnow().isoformat(), resolved_by, request_id),
+                (status, datetime.utcnow().isoformat() + "Z", resolved_by, request_id),
             )
 
     try:

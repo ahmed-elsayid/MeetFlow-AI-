@@ -178,17 +178,22 @@ async def upload_transcript(
     }
     await store_meeting_state(meeting_id, state)
 
-    # Embed every chunk into ChromaDB for RAG search
+    # Embed into ChromaDB using a sliding window so each stored document
+    # contains several consecutive utterances — retrieval results will carry
+    # full conversational context instead of isolated one-liners.
+    _WIN = 5   # utterances per embedded document
+    _STRIDE = 2  # step between window starts (overlap = WIN - STRIDE = 3)
+
     rag = get_rag_service()
     embedded = 0
-    for chunk in chunks:
+    for i in range(0, len(chunks), _STRIDE):
+        window = chunks[i : i + _WIN]
         try:
-            await rag.embed_and_store(chunk)
+            await rag.embed_window(window)
             embedded += 1
         except Exception:
             logger.warning(
-                "Failed to embed chunk [%s] for meeting %s",
-                chunk.timestamp_start, meeting_id,
+                "Failed to embed window at index %d for meeting %s", i, meeting_id,
             )
 
     logger.info(
@@ -226,9 +231,18 @@ async def process_chunk(chunk_input: ChunkInput):
         minute=chunk_input.minute,
     )
 
-    # Embed this chunk into ChromaDB so the researcher can find it via RAG
+    # Embed into ChromaDB with the 3 preceding utterances as context so the
+    # stored document captures the conversation thread, not just one line.
     try:
-        await get_rag_service().embed_and_store(chunk)
+        recent_raw = meeting["state"].get("chunks", [])[-3:]
+        context_chunks: list[TranscriptChunk] = []
+        for rc in recent_raw:
+            if isinstance(rc, dict):
+                try:
+                    context_chunks.append(TranscriptChunk(**rc))
+                except Exception:
+                    pass
+        await get_rag_service().embed_window(context_chunks + [chunk])
     except Exception:
         logger.warning("Failed to embed chunk for meeting %s", chunk_input.meeting_id)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -17,6 +18,24 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 # L2 dist = 2 - 2*cos_sim, so 1.5 ≈ cos_sim 0.25 (loosely relevant).
 # Use a generous threshold so we don't accidentally skip real hits.
 _RAG_DISTANCE_THRESHOLD = 1.5
+
+# Patterns that indicate a greeting or conversational message — no RAG/search needed.
+_GREETING_RE = re.compile(
+    r"^\s*("
+    r"hi+|hello+|hey+|howdy|hiya|greetings?|salut|"
+    r"good\s+(morning|afternoon|evening|day|night)|"
+    r"how\s+are\s+(you|u)|what'?s\s+up|sup|yo|"
+    r"thanks?|thank\s+you|bye+|goodbye|see\s+you|"
+    r"ok+|okay|sure|cool|great|nice|wow"
+    r")\s*[!?.]*\s*$",
+    re.IGNORECASE,
+)
+
+_GREETING_REPLY = (
+    "Hello! I'm MeetFlow AI, your meeting assistant. "
+    "I can answer questions about meeting transcripts, notes, decisions, tasks, and action items. "
+    "Try asking something like \"What were the key decisions?\" or \"Who is responsible for the dashboard task?\""
+)
 
 
 @router.post("/query")
@@ -39,6 +58,11 @@ async def rag_query(req: RAGQueryRequest):
 async def rag_chat(req: ChatRequest):
     """ChatGPT-style Q&A: searches RAG first, falls back to Tavily web search."""
     try:
+        # Short-circuit greetings and off-topic one-liners — no RAG or web search needed.
+        if _GREETING_RE.match(req.question.strip()):
+            logger.info("RAG chat: greeting detected — skipping RAG/Tavily")
+            return ChatResponse(answer=_GREETING_REPLY, source="none", chunks=[])
+
         rag = get_rag_service()
 
         # rag.query() never raises — returns [] when collection is empty or model fails

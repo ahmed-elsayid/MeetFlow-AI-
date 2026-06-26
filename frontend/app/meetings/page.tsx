@@ -148,6 +148,7 @@ function UploadTranscriptModal({
   const [meetingId, setMeetingId] = useState("");
   const [title, setTitle] = useState("");
   const [recipientEmails, setRecipientEmails] = useState("");
+  const [stakeholderEmails, setStakeholderEmails] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const router = useRouter();
   const { mutate: upload, isPending } = useUploadTranscript();
@@ -161,6 +162,7 @@ function UploadTranscriptModal({
     formData.append("meeting_id", meetingId.trim());
     formData.append("title", title.trim());
     formData.append("recipient_emails", recipientEmails.trim());
+    formData.append("stakeholder_emails", stakeholderEmails.trim());
 
     upload(formData, {
       onSuccess: (data) => {
@@ -192,11 +194,18 @@ function UploadTranscriptModal({
           onChange={(e) => setTitle(e.target.value)}
         />
         <Input
-          label="Recipient emails (comma-separated)"
+          label="Participant emails (comma-separated)"
           placeholder="alice@co.com, bob@co.com"
           value={recipientEmails}
           onChange={(e) => setRecipientEmails(e.target.value)}
-          hint="Leave blank to skip email sending"
+          hint="Recipients of the detailed participant recap email"
+        />
+        <Input
+          label="Stakeholder emails (comma-separated)"
+          placeholder="cto@co.com, pm@co.com"
+          value={stakeholderEmails}
+          onChange={(e) => setStakeholderEmails(e.target.value)}
+          hint="Recipients of the brief stakeholder summary email — leave blank to use participant emails"
         />
 
         <div className="space-y-1.5">

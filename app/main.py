@@ -1,7 +1,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+
+# ── LangSmith tracing ────────────────────────────────────────────────────────
+# LangChain reads LANGCHAIN_* vars from os.environ at call time.
+# pydantic-settings loads .env into the Settings object but does NOT write back
+# to os.environ, so we must do it explicitly before any LangChain import runs.
+from app.config import settings as _settings
+if _settings.langchain_api_key:
+    os.environ["LANGCHAIN_TRACING_V2"] = "true" if _settings.langchain_tracing_v2 else "false"
+    os.environ["LANGCHAIN_API_KEY"]    = _settings.langchain_api_key
+    os.environ["LANGCHAIN_PROJECT"]    = _settings.langchain_project or "ai-meeting-system"
+    os.environ.setdefault("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com")
+# ─────────────────────────────────────────────────────────────────────────────
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

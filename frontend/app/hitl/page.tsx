@@ -51,6 +51,12 @@ function parsePayload(raw: string): Record<string, unknown> | null {
 
 // ─── Inspect modal with editing ───────────────────────────────────────────────
 
+function variantLabel(v: string | undefined): string | undefined {
+  if (v === "participant") return "Participant";
+  if (v === "stakeholder") return "Stakeholder";
+  return undefined;
+}
+
 function InspectModal({
   item,
   onClose,
@@ -64,6 +70,7 @@ function InspectModal({
   const payload = parsePayload(item.payload);
   const isEmail = item.action_type === "email_send";
   const draft = isEmail ? (payload?.draft as Record<string, unknown> | undefined) : undefined;
+  const emailVariant = variantLabel(draft?.variant as string | undefined);
 
   // Editing state
   const [editing, setEditing] = useState(false);
@@ -100,8 +107,12 @@ function InspectModal({
 
   const isPending_ = item.status === "pending";
 
+  const modalTitle = isEmail && emailVariant
+    ? `Email Approval — ${emailVariant}`
+    : item.action_type;
+
   return (
-    <Modal open onClose={onClose} title={`${item.action_type}`} size="lg">
+    <Modal open onClose={onClose} title={modalTitle} size="lg">
       <div className="space-y-4">
         {/* Meta */}
         <div className="grid grid-cols-2 gap-3 text-sm">
@@ -130,6 +141,14 @@ function InspectModal({
               <div className="flex items-center gap-2">
                 <Mail className="w-4 h-4 text-accent" />
                 <span className="text-sm font-semibold text-text">Email draft</span>
+                {emailVariant && (
+                  <Badge
+                    variant={emailVariant === "Stakeholder" ? "accent" : "primary"}
+                    size="sm"
+                  >
+                    {emailVariant}
+                  </Badge>
+                )}
               </div>
               {isPending_ && (
                 <Button
@@ -249,12 +268,24 @@ function RequestRow({
   onReject: (id: string) => void;
 }) {
   const isPending = item.status === "pending";
+  const isEmail = item.action_type === "email_send";
+  const rowVariant = isEmail
+    ? variantLabel((parsePayload(item.payload)?.draft as Record<string, unknown> | undefined)?.variant as string | undefined)
+    : undefined;
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b border-border/50 last:border-0 hover:bg-bg-elevated/50 transition-colors">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="text-sm font-medium text-text">{item.action_type}</p>
+          {rowVariant && (
+            <Badge
+              variant={rowVariant === "Stakeholder" ? "accent" : "primary"}
+              size="sm"
+            >
+              {rowVariant}
+            </Badge>
+          )}
           <StatusBadge status={item.status} />
         </div>
         <div className="flex items-center gap-3 mt-0.5">
