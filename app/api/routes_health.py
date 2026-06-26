@@ -21,7 +21,8 @@ async def health_check():
     try:
         import chromadb
         from app.config import settings
-        client = chromadb.HttpClient(host=settings.chromadb_host, port=settings.chromadb_port)
+
+        client = chromadb.PersistentClient(path=settings.chromadb_path)
         client.heartbeat()
         checks["chromadb"] = True
     except Exception:

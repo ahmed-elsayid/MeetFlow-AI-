@@ -1,19 +1,78 @@
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 *.egg-info/
 dist/
 build/
-.env
+.eggs/
 .venv/
 venv/
-*.log
-chromadb_data/
-app_logs/
-.pytest_cache/
+env/
+.python-version
+pip-wheel-metadata/
 .mypy_cache/
-.claude/
-output/
-debug_screenshot.png
-recording.wav
-bot.log
+.ruff_cache/
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ── Node / Frontend build ─────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+.turbo/
+.vercel/
+
+# ── Environment / Secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.*.example
+.env.local
+.env.*.local
+frontend/.env.local
+frontend/.env.*.local
 bot/.env
+notion_token.txt
+*_token.txt
+
+# ── IDE / Local tooling ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+app_logs/
+
+# ── Databases / Runtime state ─────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+dump.rdb
+chroma_db/
+notebooks/chroma_db/
+chromadb_data/
+
+# ── Bot output / Generated data ───────────────────────────────────────────────
+output/
+recording.wav
+debug_screenshot.png
+silent.wav
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+frontend/node_modules/

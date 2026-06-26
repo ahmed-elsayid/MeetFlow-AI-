@@ -55,8 +55,8 @@ async def researcher_node(state: MeetingState) -> dict:
         try:
             question = await _extract_question(item.chunk.text)
 
-            # Stage 1: RAG retrieval
-            rag_results = get_rag_service().query(
+            # Stage 1: RAG retrieval (async)
+            rag_results = await get_rag_service().query(
                 question=question,
                 meeting_id=meeting_id,
                 top_k=5,

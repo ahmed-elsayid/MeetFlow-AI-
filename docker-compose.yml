@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: meetflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Backend API ────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meetflow-app
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CHROMA_PERSIST_DIR=/data/chroma
+    volumes:
+      - chroma_data:/data/chroma
+      - sqlite_data:/data/sqlite
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Worker (Redis Streams consumer) ───────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: meetflow-worker
+    command: python -m app.worker.consumer
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CHROMA_PERSIST_DIR=/data/chroma
+    volumes:
+      - chroma_data:/data/chroma
+      - sqlite_data:/data/sqlite
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # ── Teams Bot ──────────────────────────────────────────────────────────────
+  # Run with: docker compose --profile bot up
+  # Pass the Teams link via APP_TEAMS_URL env var or CLI arg.
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: meetflow-bot
+    env_file: .env
+    environment:
+      - APP_SERVER_URL=http://app:8080
+      - APP_MEETING_ID=live
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - bot
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+    container_name: meetflow-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://app:8080
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  chroma_data:
+  sqlite_data:

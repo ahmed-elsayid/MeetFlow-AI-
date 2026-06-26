@@ -1,5 +1,17 @@
-"""Notetaker agent node — LLM summarizes transcript in chunks,
-then merges results and writes to Notion via MCP stdio transport."""
+"""Notetaker agent — incremental note-taking during the meeting, full
+summarisation + Notion write at end of meeting.
+
+Live mode  (is_meeting_active=True):
+  • Called once per relevant chunk.
+  • Processes only the LATEST chunk (O(1) API calls, not O(N²)).
+  • Updates state["notes"] and state["decisions"] incrementally.
+  • Does NOT write to Notion yet.
+
+Post-meeting mode  (is_meeting_active=False):
+  • Processes the FULL accumulated transcript in batches.
+  • Produces a clean, deduplicated final summary.
+  • Writes the result to Notion.
+"""
 
 from __future__ import annotations
 
@@ -7,125 +19,212 @@ import json
 import logging
 import os
 from pathlib import Path
-from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage
-from mcp.client.stdio import stdio_client
-from mcp import StdioServerParameters
-from mcp.client.session import ClientSession
 
-from dotenv import load_dotenv
-load_dotenv()
+from langchain_core.messages import HumanMessage
+
+from app.graph.nodes._llm import build_llm
+from app.models.schemas import NoteSection
 
 logger = logging.getLogger(__name__)
 
-PROMPT_PATH = Path(__file__).resolve().parent / "notetaker.txt"
+PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent.parent.parent / "prompts" / "notetaker.txt"
+)
 CHUNK_TOKEN_LIMIT = 3000
-CHARS_PER_TOKEN = 4  # rough estimate: 1 token ≈ 4 chars
+CHARS_PER_TOKEN = 4
 
 
-def chunk_transcript(transcript: str, max_tokens: int = CHUNK_TOKEN_LIMIT, overlap_lines: int = 5) -> list[str]:
-    """Split transcript into chunks of ~max_tokens each with overlapping lines at boundaries."""
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _chunk_transcript(transcript: str, max_tokens: int = CHUNK_TOKEN_LIMIT) -> list[str]:
+    """Split a long transcript string into ~max_tokens batches."""
     max_chars = max_tokens * CHARS_PER_TOKEN
     lines = transcript.split("\n")
-    chunks = []
-    current_chunk = []
+    batches: list[str] = []
+    current: list[str] = []
     current_len = 0
- 
+    overlap_lines = 4
+
     for line in lines:
         line_len = len(line)
-        if current_len + line_len > max_chars and current_chunk:
-            chunks.append("\n".join(current_chunk))
-            # carry over last `overlap_lines` lines into the next chunk
-            overlap = current_chunk[-overlap_lines:]
-            current_chunk = overlap + [line]
-            current_len = sum(len(l) for l in current_chunk)
+        if current_len + line_len > max_chars and current:
+            batches.append("\n".join(current))
+            overlap = current[-overlap_lines:]
+            current = overlap + [line]
+            current_len = sum(len(l) for l in current)
         else:
-            current_chunk.append(line)
+            current.append(line)
             current_len += line_len
- 
-    if current_chunk:
-        chunks.append("\n".join(current_chunk))
- 
-    return chunks
- 
+
+    if current:
+        batches.append("\n".join(current))
+    return batches
 
 
-def merge_summaries(summaries: list[dict]) -> dict:
-    """Merge multiple chunk summaries into one final summary."""
-    merged_decisions = []
-    merged_actions = []
-    merged_discussion = []
-    seen_decisions = set()
-    seen_actions = set()
-    seen_headers = {}
-
-    for summary in summaries:
-        for d in summary.get("key_decisions", []):
-            if d.lower() not in seen_decisions:
-                seen_decisions.add(d.lower())
-                merged_decisions.append(d)
-
-        for a in summary.get("action_items", []):
-            if a.lower() not in seen_actions:
-                seen_actions.add(a.lower())
-                merged_actions.append(a)
-
-        for section in summary.get("discussion_points", []):
-            header = section.get("header", "")
-            notes = section.get("notes", [])
-            if header in seen_headers:
-                existing_notes = seen_headers[header]
-                for note in notes:
-                    if note not in existing_notes:
-                        existing_notes.append(note)
-            else:
-                seen_headers[header] = list(notes)
-                merged_discussion.append({"header": header, "notes": seen_headers[header]})
-
-    return {
-        "key_decisions": merged_decisions,
-        "action_items": merged_actions,
-        "discussion_points": merged_discussion,
-    }
+def _build_transcript_from_chunks(chunks: list) -> str:
+    lines: list[str] = []
+    for c in chunks:
+        if hasattr(c, "speaker"):
+            lines.append(f"[{c.speaker}]: {c.text}")
+        elif isinstance(c, dict):
+            lines.append(f"[{c.get('speaker', 'Unknown')}]: {c.get('text', '')}")
+    return "\n".join(lines)
 
 
-async def summarize_chunk(llm: ChatGroq, prompt_template: str, chunk: str, chunk_idx: int) -> dict:
-    """Send a single chunk to the LLM and return parsed JSON."""
-    response = llm.invoke([
-        HumanMessage(content=prompt_template.replace("{transcript}", chunk))
-    ])
-    raw = response.content
-    clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(clean)
-    logger.info("Chunk %d summarized: %d decisions, %d actions, %d topics",
-                chunk_idx,
-                len(data.get("key_decisions", [])),
-                len(data.get("action_items", [])),
-                len(data.get("discussion_points", [])))
-    return data
+def _serialize_existing_notes(notes: list[NoteSection], decisions: list[str]) -> str:
+    """Produce a compact text representation of accumulated notes for the LLM."""
+    parts: list[str] = []
+    for n in notes:
+        obj = n if isinstance(n, NoteSection) else NoteSection(**n)
+        points_text = "\n".join(f"  • {p}" for p in obj.points)
+        parts.append(f"**{obj.topic}**\n{points_text}")
+    if decisions:
+        dec_text = "\n".join(f"  • {d}" for d in decisions)
+        parts.append(f"**Decisions**\n{dec_text}")
+    return "\n\n".join(parts)
 
+
+async def _call_llm_for_notes(
+    llm,
+    prompt_template: str,
+    existing_notes_str: str,
+    chunks_text: str,
+) -> tuple[list[NoteSection], list[str]]:
+    """Single LLM call to the notetaker.txt template. Returns (sections, decisions)."""
+    prompt = prompt_template.format(
+        existing_notes=existing_notes_str or "(none yet)",
+        chunks=chunks_text,
+    )
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    raw = (
+        response.content.strip()
+        .removeprefix("```json").removeprefix("```")
+        .removesuffix("```").strip()
+    )
+    data = json.loads(raw)
+
+    sections = [
+        NoteSection(
+            topic=s.get("topic", "Notes"),
+            points=s.get("points", []),
+            is_decision=s.get("is_decision", False),
+        )
+        for s in data.get("sections", [])
+    ]
+    decisions = data.get("decisions", [])
+    return sections, decisions
+
+
+async def _write_to_notion(
+    meeting_id: str,
+    all_sections: list[NoteSection],
+    all_decisions: list[str],
+) -> None:
+    """Write the final accumulated notes to Notion via MCP stdio."""
+    from mcp import StdioServerParameters
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    try:
+        from app.config import settings
+
+        # Strip the view query param (?v=...) browsers append when copying Notion URLs.
+        # Use settings object — pydantic-settings reads .env but does NOT write to os.environ.
+        raw_db_id = (settings.notion_database_id or "").strip()
+        database_id = raw_db_id.split("?")[0].strip()
+        if not database_id:
+            raise ValueError("NOTION_DATABASE_ID is not set in .env")
+
+        if "-" not in database_id and len(database_id) == 32:
+            database_id = (
+                f"{database_id[0:8]}-{database_id[8:12]}-"
+                f"{database_id[12:16]}-{database_id[16:20]}-{database_id[20:]}"
+            )
+
+        # Prefer OAuth token file; fall back to integration token in .env.
+        token_path = Path(__file__).resolve().parent.parent.parent.parent / "notion_token.txt"
+        if token_path.exists():
+            notion_token = token_path.read_text(encoding="utf-8").strip()
+            logger.info("Notion: using OAuth token from notion_token.txt")
+        else:
+            notion_token = (settings.notion_api_key or "").strip()
+            if not notion_token:
+                raise ValueError(
+                    "No Notion token — set NOTION_API_KEY in .env "
+                    "or complete OAuth flow (notion_token.txt)"
+                )
+            logger.info("Notion: using NOTION_API_KEY from .env")
+
+        server_params = StdioServerParameters(
+            command="npx",
+            args=["-y", "@notionhq/notion-mcp-server"],
+            env={
+                "OPENAPI_MCP_HEADERS": json.dumps({
+                    "Authorization": f"Bearer {notion_token}",
+                    "Notion-Version": "2022-06-28",
+                })
+            },
+        )
+
+        children: list[dict] = []
+
+        if all_decisions:
+            children.append({
+                "type": "heading_2",
+                "heading_2": {"rich_text": [{"type": "text", "text": {"content": "Key Decisions"}}]},
+            })
+            for d in all_decisions:
+                children.append({
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": d}}]},
+                })
+
+        for section in all_sections:
+            children.append({
+                "type": "heading_2" if section.is_decision else "heading_3",
+                "heading_2" if section.is_decision else "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": section.topic}}]
+                },
+            })
+            for point in section.points:
+                children.append({
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": point}}]},
+                })
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                await session.call_tool(
+                    "API-post-page",
+                    arguments={
+                        "parent": {"database_id": database_id},
+                        "properties": {
+                            "title": {"title": [{"text": {"content": f"Meeting Notes – {meeting_id}"}}]}
+                        },
+                        "children": children,
+                    },
+                )
+                logger.info("Notion page created for meeting %s", meeting_id)
+
+    except Exception as exc:
+        logger.warning("Notion MCP write failed (non-fatal): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# LangGraph node
+# ---------------------------------------------------------------------------
 
 async def notetaker_node(state: dict) -> dict:
-    """LangGraph node: LLM summarizes transcript in chunks, then writes to Notion via MCP."""
+    """LangGraph node: incremental live note-taking or full post-meeting summarisation."""
+    is_live: bool = state.get("is_meeting_active", True)
+    chunks = state.get("chunks", [])
 
-    transcript = state.get("transcript", "")
-    if not transcript:
-        logger.info("Notetaker: empty transcript.")
-        return {"notes": {}}
+    if not chunks:
+        return {}
 
-    if isinstance(transcript, list):
-        transcript = "\n".join(
-            f"{entry['speaker']['name']}: {entry['text']}"
-            for entry in transcript
-        )
-    transcript = transcript.strip()
-
-    total_tokens = len(transcript) // CHARS_PER_TOKEN
-    logger.info("Transcript length: %d chars (~%d tokens)", len(transcript), total_tokens)
-
-    # ------------------------------------------------------------------ #
-    #  1. Load prompt
-    # ------------------------------------------------------------------ #
     try:
         prompt_template = PROMPT_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -133,142 +232,79 @@ async def notetaker_node(state: dict) -> dict:
         logger.error(msg)
         return {"error_log": [msg]}
 
-    # ------------------------------------------------------------------ #
-    #  2. Chunk + summarize each chunk
-    # ------------------------------------------------------------------ #
-    llm = ChatGroq(
-        model="llama-3.1-8b-instant",
-        api_key=os.getenv("GROQ_API_KEY")
-    )
+    llm = build_llm(max_tokens=2048, temperature=0)
 
-    chunks = chunk_transcript(transcript)
-    logger.info("Split into %d chunks", len(chunks))
+    # Existing accumulated notes (for deduplication context)
+    existing_sections: list[NoteSection] = state.get("notes", [])
+    existing_decisions: list[str] = state.get("decisions", [])
+    existing_notes_str = _serialize_existing_notes(existing_sections, existing_decisions)
 
-    summaries = []
-    for i, chunk in enumerate(chunks):
-        chunk_tokens = len(chunk) // CHARS_PER_TOKEN
-        logger.info("Processing chunk %d/%d (~%d tokens)", i + 1, len(chunks), chunk_tokens)
+    if is_live:
+        # ---------------------------------------------------------------
+        # LIVE MODE — process only the latest chunk (fast, O(1) per call)
+        # ---------------------------------------------------------------
+        latest = chunks[-1]
+        if hasattr(latest, "speaker"):
+            chunk_text = f"[{latest.speaker}]: {latest.text}"
+        elif isinstance(latest, dict):
+            chunk_text = f"[{latest.get('speaker', 'Unknown')}]: {latest.get('text', '')}"
+        else:
+            return {}
+
         try:
-            summary = await summarize_chunk(llm, prompt_template, chunk, i + 1)
-            summaries.append(summary)
+            new_sections, new_decisions = await _call_llm_for_notes(
+                llm, prompt_template, existing_notes_str, chunk_text
+            )
         except (json.JSONDecodeError, TypeError) as exc:
-            logger.error("Failed to parse chunk %d: %s", i + 1, exc)
-            continue
+            logger.warning("Notetaker parse failed for live chunk: %s", exc)
+            return {"error_log": [f"notetaker live parse error: {exc}"]}
         except Exception as exc:
-            logger.error("LLM call failed for chunk %d: %s", i + 1, exc)
-            continue
+            logger.warning("Notetaker LLM failed for live chunk: %s", exc)
+            return {"error_log": [f"notetaker live error: {exc}"]}
 
-    if not summaries:
-        return {"error_log": ["All chunks failed to summarize"]}
-
-    # ------------------------------------------------------------------ #
-    #  3. Merge all chunk summaries
-    # ------------------------------------------------------------------ #
-    merged = merge_summaries(summaries)
-
-    logger.info("Merged: %d decisions, %d actions, %d topics",
-                len(merged["key_decisions"]),
-                len(merged["action_items"]),
-                len(merged["discussion_points"]))
-
-    # ------------------------------------------------------------------ #
-    #  3.5. LLM finalization — clean up, deduplicate, and coherence pass
-    # ------------------------------------------------------------------ #
-    final_prompt = f"""You are a meeting notes assistant.
-Below are combined meeting notes extracted from multiple transcript chunks.
-Clean them up: remove any duplicates, fix inconsistencies, and ensure the final output is coherent.
-Return ONLY valid JSON, no markdown, no backticks.
-{{
-  "key_decisions": [...],
-  "action_items": [...],
-  "discussion_points": [...]
-}}
-Combined notes:
-{json.dumps(merged, indent=2)}
-"""
-
-    try:
-        response = llm.invoke([HumanMessage(content=final_prompt)])
-        raw = response.content.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        final = json.loads(raw)
-        logger.info("Finalized: %d decisions, %d actions, %d topics",
-                    len(final.get("key_decisions", [])),
-                    len(final.get("action_items", [])),
-                    len(final.get("discussion_points", [])))
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("LLM finalization parse failed, falling back to merged: %s", exc)
-        final = merged
-    except Exception as exc:
-        logger.warning("LLM finalization call failed, falling back to merged: %s", exc)
-        final = merged
-
-    key_decisions = final.get("key_decisions", merged["key_decisions"])
-    action_items = final.get("action_items", merged["action_items"])
-    discussion_points = final.get("discussion_points", merged["discussion_points"])
-
-    # ------------------------------------------------------------------ #
-    #  4. Write to Notion via MCP stdio
-    # ------------------------------------------------------------------ #
-    try:
-        meeting_id = state["meeting_id"]
-        database_id = os.environ["NOTION_DATABASE_ID"]
-        if "-" not in database_id:
-            database_id = f"{database_id[0:8]}-{database_id[8:12]}-{database_id[12:16]}-{database_id[16:20]}-{database_id[20:]}"
-
-        with open("notion_token.txt") as f:
-            notion_token = f.read().strip()
-
-        server_params = StdioServerParameters(
-            command="npx",
-            args=["-y", "@notionhq/notion-mcp-server"],
-            env={"OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {notion_token}", "Notion-Version": "2022-06-28"}}'}
+        logger.info(
+            "Live notetaker: +%d sections +%d decisions", len(new_sections), len(new_decisions)
         )
+        return {"notes": new_sections, "decisions": new_decisions}
 
-        children = []
+    else:
+        # ---------------------------------------------------------------
+        # POST-MEETING MODE — full transcript, batched, then Notion write
+        # ---------------------------------------------------------------
+        full_transcript = _build_transcript_from_chunks(chunks)
+        if not full_transcript.strip():
+            return {}
 
-        children.append({"type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "📋 Key Decisions Made"}}]}})
-        for d in key_decisions:
-            children.append({"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": d}}]}})
+        batches = _chunk_transcript(full_transcript)
+        logger.info("Post-meeting notetaker: processing %d batch(es)", len(batches))
 
-        children.append({"type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "✅ Action Items"}}]}})
-        for a in action_items:
-            children.append({"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": a}}]}})
+        # Carry accumulated notes forward across batches
+        running_sections: list[NoteSection] = list(existing_sections)
+        running_decisions: list[str] = list(existing_decisions)
 
-        children.append({"type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "📌 Main Discussion Points"}}]}})
-        for section in discussion_points:
-            children.append({"type": "heading_3", "heading_3": {"rich_text": [{"type": "text", "text": {"content": section["header"]}}]}})
-            for note in section["notes"]:
-                children.append({"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": note}}]}})
-
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                logger.info("Notion MCP connected successfully")
-
-                result = await session.call_tool(
-                    "API-post-page",
-                    arguments={
-                        "parent": {"database_id": database_id},
-                        "properties": {
-                            "title": {"title": [{"text": {"content": f"Meeting Notes – {meeting_id}"}}]}
-                        },
-                        "children": children
-                    }
+        for i, batch_text in enumerate(batches, start=1):
+            running_str = _serialize_existing_notes(running_sections, running_decisions)
+            try:
+                new_secs, new_decs = await _call_llm_for_notes(
+                    llm, prompt_template, running_str, batch_text
                 )
-                logger.info("Notion page created: %s", result)
+                running_sections.extend(new_secs)
+                running_decisions.extend(new_decs)
+                logger.info("Batch %d/%d: +%d sections +%d decisions", i, len(batches), len(new_secs), len(new_decs))
+            except (json.JSONDecodeError, TypeError) as exc:
+                logger.warning("Notetaker batch %d parse failed: %s", i, exc)
+            except Exception as exc:
+                logger.warning("Notetaker batch %d LLM failed: %s", i, exc)
 
-    except Exception as exc:
-        import traceback
-        logger.warning("Notion MCP push failed (non-fatal): %s", exc)
-        traceback.print_exc()
+        # Slices that are NEW (not already in existing state — they're the delta to add)
+        final_new_sections = running_sections[len(existing_sections):]
+        final_new_decisions = running_decisions[len(existing_decisions):]
 
-    return {
-        "notes": {
-            "key_decisions": key_decisions,
-            "action_items": action_items,
-            "discussion_points": discussion_points,
-        }
-    }
+        meeting_id = state.get("meeting_id", "unknown")
+        await _write_to_notion(meeting_id, running_sections, running_decisions)
 
-
-
+        logger.info(
+            "Post-meeting notetaker done: %d total sections, %d total decisions",
+            len(running_sections), len(running_decisions),
+        )
+        return {"notes": final_new_sections, "decisions": final_new_decisions}

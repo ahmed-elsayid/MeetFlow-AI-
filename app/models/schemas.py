@@ -117,3 +117,15 @@ class ApprovalResponse(BaseModel):
     status: ApprovalStatus
     edited_payload: Optional[dict] = None
     resolved_by: str = "unknown"
+
+
+class ChatRequest(BaseModel):
+    question: str
+    meeting_id: Optional[str] = None
+    history: list[dict] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    answer: str
+    source: str  # "rag" | "web" | "none"
+    chunks: list[dict] = Field(default_factory=list)

@@ -1,11 +1,14 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
-    # LLM
-    anthropic_api_key: str = ""
+    # Groq LLM
     groq_api_key: str = ""
-    openai_api_key: str = ""
+    groq_model_name: str = "llama-3.3-70b-versatile"
 
     # Web Search
     tavily_api_key: str = ""
@@ -47,7 +50,7 @@ class Settings(BaseSettings):
     app_port: int = 8080
     hitl_timeout_seconds: int = 600
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": str(_ENV_FILE), "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

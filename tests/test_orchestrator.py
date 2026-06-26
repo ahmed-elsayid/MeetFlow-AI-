@@ -5,8 +5,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.graph.orchestrator import classify_chunk, route_by_classification
-from app.models.enums import ChunkClassification
 from app.models.schemas import ClassifiedChunk, TranscriptChunk
+
+
+def _make_classified(classification: str) -> list[ClassifiedChunk]:
+    chunk = TranscriptChunk(
+        meeting_id="t", speaker="A", text="x",
+        timestamp_start="00:00:00", timestamp_end="00:00:05", minute=0,
+    )
+    return [ClassifiedChunk(chunk=chunk, classification=classification, confidence=0.9)]
 
 
 @pytest.mark.asyncio
@@ -31,7 +38,6 @@ async def test_classify_chunk_task(mock_llm, sample_chunks):
     mock_llm.ainvoke = AsyncMock(return_value=mock_response)
 
     result = await classify_chunk(sample_chunks[1])
-
     assert result.classification == "task_commitment"
 
 
@@ -43,58 +49,29 @@ async def test_classify_chunk_invalid_json_falls_back(mock_llm, sample_chunks):
     mock_llm.ainvoke = AsyncMock(return_value=mock_response)
 
     result = await classify_chunk(sample_chunks[0])
-
     assert result.classification == "discussion"
     assert result.confidence == 0.5
 
 
 def test_route_discussion():
-    state = {
-        "classified": [
-            ClassifiedChunk(
-                chunk=TranscriptChunk(
-                    meeting_id="t", speaker="A", text="x",
-                    timestamp_start="00:00:00", timestamp_end="00:00:05", minute=0,
-                ),
-                classification="discussion",
-                confidence=0.9,
-            )
-        ]
-    }
-    assert route_by_classification(state) == ["notetaker"]
+    assert route_by_classification({"classified": _make_classified("discussion")}) == "notetaker"
+
+
+def test_route_decision():
+    assert route_by_classification({"classified": _make_classified("decision")}) == "notetaker"
 
 
 def test_route_task():
-    state = {
-        "classified": [
-            ClassifiedChunk(
-                chunk=TranscriptChunk(
-                    meeting_id="t", speaker="A", text="x",
-                    timestamp_start="00:00:00", timestamp_end="00:00:05", minute=0,
-                ),
-                classification="task_commitment",
-                confidence=0.9,
-            )
-        ]
-    }
-    assert route_by_classification(state) == ["task_extractor"]
+    assert route_by_classification({"classified": _make_classified("task_commitment")}) == "task_extractor"
+
+
+def test_route_research():
+    assert route_by_classification({"classified": _make_classified("research_trigger")}) == "researcher"
 
 
 def test_route_off_topic():
-    state = {
-        "classified": [
-            ClassifiedChunk(
-                chunk=TranscriptChunk(
-                    meeting_id="t", speaker="A", text="x",
-                    timestamp_start="00:00:00", timestamp_end="00:00:05", minute=0,
-                ),
-                classification="off_topic",
-                confidence=0.9,
-            )
-        ]
-    }
-    assert route_by_classification(state) == ["discard"]
+    assert route_by_classification({"classified": _make_classified("off_topic")}) == "discard"
 
 
 def test_route_empty_state():
-    assert route_by_classification({"classified": []}) == ["discard"]
+    assert route_by_classification({"classified": []}) == "discard"

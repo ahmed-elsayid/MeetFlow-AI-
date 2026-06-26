@@ -74,3 +74,8 @@ async def get_meeting_state(meeting_id: str) -> dict | None:
     if data:
         return json.loads(data)
     return None
+
+
+async def delete_meeting_state(meeting_id: str) -> None:
+    r = await get_redis()
+    await r.delete(f"meeting:{meeting_id}:state")

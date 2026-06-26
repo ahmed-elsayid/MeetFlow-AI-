@@ -19,6 +19,7 @@ async def approval_respond(resp: ApprovalResponse):
             request_id=resp.request_id,
             status=resp.status,
             resolved_by=resp.resolved_by,
+            edited_payload=resp.edited_payload,
         )
         return {"status": "recorded", "request_id": resp.request_id}
     except Exception:

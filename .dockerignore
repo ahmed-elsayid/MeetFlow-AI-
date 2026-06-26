@@ -1,0 +1,50 @@
+# Version control
+.git/
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Tests and docs (not needed in image)
+tests/
+notebooks/
+*.md
+!bot/README.md
+
+# Frontend (built separately via frontend/Dockerfile)
+frontend/node_modules/
+frontend/.next/
+
+# Environment / Secrets
+.env
+.env.*
+bot/.env
+notion_token.txt
+
+# Runtime state — never bake into image
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+dump.rdb
+chroma_db/
+output/
+
+# IDE / OS
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+app_logs/

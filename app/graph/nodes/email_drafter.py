@@ -16,8 +16,6 @@ PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "prompts"
 PARTICIPANT_PROMPT = (PROMPTS_DIR / "email_participant.txt").read_text()
 STAKEHOLDER_PROMPT = (PROMPTS_DIR / "email_stakeholder.txt").read_text()
 
-llm = build_llm(max_tokens=4096, temperature=0)
-
 
 def _serialize(items: list) -> str:
     """Serialize a list of Pydantic models or plain strings for prompt injection."""
@@ -30,6 +28,63 @@ def _serialize(items: list) -> str:
     return "\n".join(parts) if parts else "(none)"
 
 
+async def _draft_email(
+    llm,
+    prompt_template: str,
+    fmt_kwargs: dict,
+    variant: str,
+    recipients: list[str],
+    fallback_subject: str,
+) -> EmailDraft:
+    """Call the LLM to draft one email variant. Returns a fallback draft on any error."""
+    try:
+        prompt = prompt_template.format(**fmt_kwargs)
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw = (
+            response.content.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Email drafter (%s): LLM output not valid JSON — wrapping as HTML. "
+                "First 300 chars: %s",
+                variant, raw[:300],
+            )
+            data = {
+                "subject": fallback_subject,
+                "body_html": f"<html><body><pre>{raw}</pre></body></html>",
+            }
+
+        return EmailDraft(
+            variant=variant,
+            subject=data.get("subject", fallback_subject),
+            body_html=data.get("body_html", ""),
+            recipients=recipients,
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Email drafter (%s): LLM call failed — %s: %s",
+            variant, type(exc).__name__, exc,
+        )
+        return EmailDraft(
+            variant=variant,
+            subject=fallback_subject,
+            body_html=(
+                "<html><body>"
+                "<p><strong>Email generation failed.</strong></p>"
+                f"<p>Error: {type(exc).__name__}: {exc}</p>"
+                "</body></html>"
+            ),
+            recipients=recipients,
+        )
+
+
 async def email_drafter_node(state: MeetingState) -> dict:
     """Post-meeting node: drafts participant and stakeholder recap emails."""
     meeting_id = state.get("meeting_id", "unknown")
@@ -40,86 +95,40 @@ async def email_drafter_node(state: MeetingState) -> dict:
     recipient_emails: list[str] = state.get("recipient_emails", [])
     stakeholder_emails: list[str] = state.get("stakeholder_emails", []) or recipient_emails
 
-    drafts: list[EmailDraft] = []
+    # Build LLM lazily inside the node so import-time failures don't block startup
+    llm = build_llm(max_tokens=4096, temperature=0)
 
-    # --- Participant email ---
-    try:
-        participant_prompt = PARTICIPANT_PROMPT.format(
-            meeting_id=meeting_id,
-            notes=_serialize(notes),
-            decisions=_serialize(decisions),
-            tasks=_serialize(tasks),
-            research=_serialize(research),
-        )
+    logger.info(
+        "Email drafter: meeting=%s notes=%d decisions=%d tasks=%d recipients=%d",
+        meeting_id, len(notes), len(decisions), len(tasks), len(recipient_emails),
+    )
 
-        response = await llm.ainvoke([HumanMessage(content=participant_prompt)])
-        raw = response.content.strip()
+    participant_draft = await _draft_email(
+        llm=llm,
+        prompt_template=PARTICIPANT_PROMPT,
+        fmt_kwargs={
+            "meeting_id": meeting_id,
+            "notes": _serialize(notes),
+            "decisions": _serialize(decisions),
+            "tasks": _serialize(tasks),
+            "research": _serialize(research),
+        },
+        variant="participant",
+        recipients=recipient_emails,
+        fallback_subject=f"Meeting Recap: {meeting_id}",
+    )
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse participant email output: %s", raw[:200])
-            data = {
-                "subject": f"Meeting Recap: {meeting_id}",
-                "body_html": f"<html><body>{raw}</body></html>",
-            }
+    stakeholder_draft = await _draft_email(
+        llm=llm,
+        prompt_template=STAKEHOLDER_PROMPT,
+        fmt_kwargs={
+            "meeting_id": meeting_id,
+            "notes": _serialize(notes),
+            "decisions": _serialize(decisions),
+        },
+        variant="stakeholder",
+        recipients=stakeholder_emails,
+        fallback_subject=f"Meeting Brief: {meeting_id}",
+    )
 
-        drafts.append(
-            EmailDraft(
-                variant="participant",
-                subject=data.get("subject", f"Meeting Recap: {meeting_id}"),
-                body_html=data.get("body_html", ""),
-                recipients=recipient_emails,
-            )
-        )
-    except Exception:
-        logger.exception("Failed to draft participant email")
-        drafts.append(
-            EmailDraft(
-                variant="participant",
-                subject=f"Meeting Recap: {meeting_id}",
-                body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=recipient_emails,
-            )
-        )
-
-    # --- Stakeholder email ---
-    try:
-        stakeholder_prompt = STAKEHOLDER_PROMPT.format(
-            meeting_id=meeting_id,
-            notes=_serialize(notes),
-            decisions=_serialize(decisions),
-        )
-
-        response = await llm.ainvoke([HumanMessage(content=stakeholder_prompt)])
-        raw = response.content.strip()
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse stakeholder email output: %s", raw[:200])
-            data = {
-                "subject": f"Meeting Brief: {meeting_id}",
-                "body_html": f"<html><body>{raw}</body></html>",
-            }
-
-        drafts.append(
-            EmailDraft(
-                variant="stakeholder",
-                subject=data.get("subject", f"Meeting Brief: {meeting_id}"),
-                body_html=data.get("body_html", ""),
-                recipients=stakeholder_emails,
-            )
-        )
-    except Exception:
-        logger.exception("Failed to draft stakeholder email")
-        drafts.append(
-            EmailDraft(
-                variant="stakeholder",
-                subject=f"Meeting Brief: {meeting_id}",
-                body_html="<html><body><p>Email generation failed.</p></body></html>",
-                recipients=stakeholder_emails,
-            )
-        )
-
-    return {"email_drafts": drafts}
+    return {"email_drafts": [participant_draft, stakeholder_draft]}
